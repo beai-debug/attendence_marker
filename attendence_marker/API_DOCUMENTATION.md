@@ -1,88 +1,45 @@
-# API Documentation - New Endpoints
+# API Documentation
 
-## Overview
-This document describes the two new endpoints added to the attendance system that support session-based enrollment and gradual embedding updates.
+## Attendance Marker System - Complete API Reference
 
-## Database Schema Changes
-
-### Composite Key Structure
-Both `students` and `attendance` tables now use a composite primary key:
-- **school_name** + **roll_no** + **session**
-
-This allows the same student (roll_no) to exist across different sessions while maintaining data integrity.
-
-### Tables
-
-#### Students Table
-```sql
-CREATE TABLE students (
-    school_name TEXT NOT NULL,
-    roll_no TEXT NOT NULL,
-    session TEXT NOT NULL,
-    name TEXT,
-    class_name TEXT,
-    section TEXT,
-    subject TEXT,
-    face_path TEXT,
-    embedding BLOB,
-    PRIMARY KEY (school_name, roll_no, session)
-)
-```
-
-#### Attendance Table
-```sql
-CREATE TABLE attendance (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    school_name TEXT,
-    roll_no TEXT,
-    session TEXT,
-    student_name TEXT,
-    class_name TEXT,
-    section TEXT,
-    subject TEXT,
-    similarity_score REAL,
-    status TEXT DEFAULT 'A',
-    date TEXT,
-    time TEXT
-)
-```
+**Base URL:** `http://localhost:8000`  
+**API Version:** 2.0.0  
+**Documentation:** `/docs` (Swagger UI) or `/redoc` (ReDoc)
 
 ---
 
-## Endpoint A: `/enroll/`
+## Table of Contents
 
-### Purpose
-Register or overwrite student embeddings with session support.
+1. [Enrollment Endpoints](#enrollment-endpoints)
+2. [Attendance Endpoints](#attendance-endpoints)
+3. [Delete Endpoints](#delete-endpoints-all-require-session)
+4. [Query Endpoints](#query-endpoints)
+5. [Database Change Log](#database-change-log)
+6. [Error Handling](#error-handling)
 
-### Method
-`POST`
+---
 
-### Required Parameters
-- **school_name** (string): School identifier
-- **session** (string): Academic session (e.g., "2025-26")
-- **faces_zip** (file): ZIP file containing student face images
+## Enrollment Endpoints
 
-### Optional Parameters
-- **class_name** (string): Class identifier
-- **section** (string): Section identifier
-- **subject** (string): Subject identifier
+### POST `/enroll/`
 
-### Request Format
+Enroll students by uploading a ZIP file containing student face images.
+
+**Request:**
 ```
 Content-Type: multipart/form-data
-
-school_name: "JNV_School"
-session: "2025-26"
-class_name: "10th"
-section: "A"
-subject: "Mathematics"
-faces_zip: <binary file>
 ```
 
-### ZIP File Structure
-The `faces_zip` file should contain folders named in the format: `{roll_no}_{student_name}`
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| school_name | string | ✅ Yes | School identifier |
+| session | string | ✅ Yes | Academic session (e.g., "2025-26") |
+| class_name | string | ❌ No | Class name |
+| section | string | ❌ No | Section |
+| subject | string | ❌ No | Subject |
+| faces_zip | file | ✅ Yes | ZIP file with student folders |
 
-Example:
+**ZIP File Structure:**
 ```
 faces.zip
 ├── 21045001_aman_meena/
@@ -90,26 +47,10 @@ faces.zip
 │   ├── photo2.jpg
 │   └── photo3.jpg
 ├── 21045002_rahul_kumar/
-│   ├── photo1.jpg
-│   └── photo2.jpg
-└── 21045003_priya_sharma/
-    ├── photo1.jpg
-    ├── photo2.jpg
-    └── photo3.jpg
+│   └── photo1.jpg
 ```
 
-### Behavior
-1. **If student exists** (matching school_name + roll_no + session):
-   - Overwrites the existing embedding
-   - Updates all student information
-
-2. **If student doesn't exist**:
-   - Creates a new record with the provided information
-   - Generates embedding from uploaded face images
-
-### Response Format
-
-#### Success Response
+**Response (200 OK):**
 ```json
 {
   "enrolled_students": [
@@ -117,11 +58,6 @@ faces.zip
       "roll_no": "21045001",
       "name": "aman_meena",
       "images_processed": 3
-    },
-    {
-      "roll_no": "21045002",
-      "name": "rahul_kumar",
-      "images_processed": 2
     }
   ],
   "school_name": "JNV_School",
@@ -129,6 +65,7 @@ faces.zip
   "class_name": "10th",
   "section": "A",
   "subject": "Mathematics",
+  "endpoint": "/enroll/",
   "skipped": [
     {
       "folder": "invalid_folder",
@@ -138,86 +75,62 @@ faces.zip
 }
 ```
 
-### Example cURL Request
+**cURL Example:**
 ```bash
 curl -X POST "http://localhost:8000/enroll/" \
   -F "school_name=JNV_School" \
   -F "session=2025-26" \
   -F "class_name=10th" \
   -F "section=A" \
-  -F "subject=Mathematics" \
-  -F "faces_zip=@students_faces.zip"
+  -F "faces_zip=@students.zip"
 ```
 
 ---
 
-## Endpoint B: `/update-embedding-via-period/`
+### POST `/enroll-new-student/`
 
-### Purpose
-Gradually update student embeddings using weighted average, allowing embeddings to evolve over time as students' appearances change.
+Alias for `/enroll/` - Same functionality.
 
-### Method
-`POST`
+---
 
-### Required Parameters
-- **school_name** (string): School identifier
-- **session** (string): Academic session (e.g., "2025-26")
-- **alpha** (float): Weight for current embedding (must be < 1)
-- **faces_zip** (file): ZIP file containing student face images
+### POST `/enroll-new-batch-with-replacement/`
 
-### Optional Parameters
-- **class_name** (string): Class identifier
-- **section** (string): Section identifier
-- **subject** (string): Subject identifier
+Enroll students with upsert behavior (INSERT OR REPLACE).
 
-### Request Format
+Same parameters as `/enroll/`. Existing students with matching composite key will be updated.
+
+---
+
+### POST `/update-embedding-via-period/`
+
+Gradually update student embeddings using weighted average.
+
+**Formula:** `new_embedding = (current_embedding × alpha) + (new_embedding × (1 - alpha))`
+
+**Request:**
 ```
 Content-Type: multipart/form-data
-
-school_name: "JNV_School"
-session: "2025-26"
-alpha: 0.7
-class_name: "10th"
-section: "A"
-subject: "Mathematics"
-faces_zip: <binary file>
 ```
 
-### Alpha Parameter
-The `alpha` parameter controls how much weight is given to the existing embedding:
-- **alpha = 0.9**: 90% old embedding + 10% new embedding (slow update)
-- **alpha = 0.7**: 70% old embedding + 30% new embedding (moderate update)
-- **alpha = 0.5**: 50% old embedding + 50% new embedding (balanced update)
-- **alpha = 0.3**: 30% old embedding + 70% new embedding (fast update)
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| school_name | string | ✅ Yes | School identifier |
+| session | string | ✅ Yes | Academic session |
+| alpha | float | ✅ Yes | Weight for current embedding (0 ≤ alpha < 1) |
+| class_name | string | ❌ No | Class name |
+| section | string | ❌ No | Section |
+| subject | string | ❌ No | Subject |
+| faces_zip | file | ✅ Yes | ZIP file with student photos |
 
-**Constraint**: alpha must be < 1 (alpha < 1.0)
+**Alpha Values Guide:**
+| Alpha | Effect |
+|-------|--------|
+| 0.9 | 90% old + 10% new (slow update) |
+| 0.7 | 70% old + 30% new (moderate) |
+| 0.5 | 50% old + 50% new (balanced) |
+| 0.3 | 30% old + 70% new (fast update) |
 
-### Update Formula
-```
-new_embedding = (current_embedding × alpha) + (new_embedding × (1 - alpha))
-```
-
-After calculation, the embedding is L2-normalized to maintain unit length.
-
-### ZIP File Structure
-Same as `/enroll/` endpoint - folders named `{roll_no}_{student_name}` containing face images.
-
-### Behavior
-
-1. **If student exists** (matching school_name + roll_no + session):
-   - Calculates new embedding from uploaded images
-   - Applies weighted average with existing embedding
-   - Updates the embedding in database
-   - Returns as "updated"
-
-2. **If student doesn't exist**:
-   - Creates a new record with the new embedding
-   - Uses provided class_name, section, subject (or defaults to "Unknown")
-   - Returns as "added"
-
-### Response Format
-
-#### Success Response
+**Response (200 OK):**
 ```json
 {
   "school_name": "JNV_School",
@@ -231,202 +144,564 @@ Same as `/enroll/` endpoint - folders named `{roll_no}_{student_name}` containin
       "name": "aman_meena",
       "images_processed": 3,
       "action": "updated"
-    },
-    {
-      "roll_no": "21045002",
-      "name": "rahul_kumar",
-      "images_processed": 2,
-      "action": "updated"
     }
   ],
   "added_students": [
     {
       "roll_no": "21045003",
-      "name": "priya_sharma",
-      "images_processed": 3,
+      "name": "new_student",
+      "images_processed": 2,
       "action": "added"
-    }
-  ],
-  "skipped": [
-    {
-      "folder": "invalid_folder",
-      "reason": "No valid face embeddings found"
     }
   ]
 }
 ```
 
-#### Error Response (Invalid Alpha)
+---
+
+## Attendance Endpoints
+
+### POST `/mark-attendance/`
+
+Mark attendance for enrolled students based on classroom photos.
+
+**Request:**
+```
+Content-Type: multipart/form-data
+```
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| school_name | string | ✅ Yes | School identifier |
+| class_name | string | ✅ Yes | Class name |
+| section | string | ✅ Yes | Section |
+| subject | string | ❌ No | Subject |
+| photos_zip | file | ✅ Yes | ZIP file with classroom photos |
+| threshold | float | ❌ No | Face match threshold (default: 0.3) |
+
+**Response (200 OK):**
+```json
+{
+  "school_name": "JNV_School",
+  "class_name": "10th",
+  "section": "A",
+  "subject": "Mathematics",
+  "date": "2026-03-04",
+  "time": "10:30:45.123",
+  "total_enrolled": 30,
+  "present_count": 25,
+  "absent_count": 5,
+  "present_students": [
+    {
+      "roll_no": "21045001",
+      "name": "aman_meena",
+      "similarity": 0.87,
+      "status": "P"
+    }
+  ],
+  "absent_students": [
+    {
+      "roll_no": "21045002",
+      "name": "rahul_kumar",
+      "status": "A"
+    }
+  ]
+}
+```
+
+---
+
+### GET `/view-attendance-on-date/`
+
+View attendance records for a specific date.
+
+**Query Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| school_name | string | ✅ Yes | School identifier |
+| date | string | ✅ Yes | Date in DD-MM-YYYY format |
+| roll_no | string | ❌ No | Filter by roll number |
+| class_name | string | ❌ No | Filter by class |
+| section | string | ❌ No | Filter by section |
+| subject | string | ❌ No | Filter by subject |
+
+**Response (200 OK):**
+```json
+{
+  "total_records": 30,
+  "date": "04-03-2026",
+  "school_name": "JNV_School",
+  "data": [
+    {
+      "date": "04-03-2026",
+      "school": "JNV_School",
+      "roll_number": "21045001",
+      "name": "aman_meena",
+      "class": "10th",
+      "subject": "Mathematics",
+      "section": "A",
+      "attendance_record": "P"
+    }
+  ]
+}
+```
+
+---
+
+### GET `/view-attendance-range/`
+
+View attendance records for a date range with statistics.
+
+**Query Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| school_name | string | ✅ Yes | School identifier |
+| start_date | string | ✅ Yes | Start date (DD-MM-YYYY, inclusive) |
+| end_date | string | ✅ Yes | End date (DD-MM-YYYY, inclusive) |
+| roll_no | string | ❌ No | Filter by roll number |
+| class_name | string | ❌ No | Filter by class |
+| section | string | ❌ No | Filter by section |
+| subject | string | ❌ No | Filter by subject |
+
+**Response (200 OK):**
+```json
+{
+  "total_students": 30,
+  "date_range": {
+    "start_date": "01-03-2026",
+    "end_date": "04-03-2026",
+    "total_days": 4
+  },
+  "dates": ["01-03-2026", "02-03-2026", "03-03-2026", "04-03-2026"],
+  "school_name": "JNV_School",
+  "data": [
+    {
+      "school": "JNV_School",
+      "roll_number": "21045001",
+      "name": "aman_meena",
+      "class": "10th",
+      "subject": "Mathematics",
+      "section": "A",
+      "01-03-2026": "P",
+      "02-03-2026": "P",
+      "03-03-2026": "A",
+      "04-03-2026": "P",
+      "total_days": 4,
+      "total_present": 3,
+      "total_absent": 1,
+      "attendance_percentage": 75.0,
+      "below_75_percent": "No"
+    }
+  ]
+}
+```
+
+---
+
+## Delete Endpoints (All Require Session)
+
+> ⚠️ **Important:** All delete endpoints require the `session` parameter to prevent accidental cross-session data deletion.
+
+### DELETE `/delete-student/`
+
+Delete a student from both students and attendance tables.
+
+**Query Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| school_name | string | ✅ Yes | School identifier |
+| roll_no | string | ✅ Yes | Student roll number |
+| session | string | ✅ Yes | Academic session (e.g., "2025-26") |
+
+**Response (200 OK):**
+```json
+{
+  "message": "Student with roll number 21045001 from school JNV_School, session 2025-26 deleted successfully",
+  "school_name": "JNV_School",
+  "roll_no": "21045001",
+  "session": "2025-26"
+}
+```
+
+**cURL Example:**
+```bash
+curl -X DELETE "http://localhost:8000/delete-student/?school_name=JNV_School&roll_no=21045001&session=2025-26"
+```
+
+---
+
+### DELETE `/delete-class/`
+
+Delete class data by school, class, and session.
+
+**Query Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| school_name | string | ✅ Yes | School identifier |
+| class_name | string | ✅ Yes | Class name |
+| session | string | ✅ Yes | Academic session |
+| section | string | ❌ No | Filter by section |
+| subject | string | ❌ No | Filter by subject |
+
+**Response (200 OK):**
+```json
+{
+  "message": "Deleted data for school JNV_School, class 10th, session 2025-26, section A",
+  "school_name": "JNV_School",
+  "class_name": "10th",
+  "session": "2025-26",
+  "section": "A",
+  "subject": null
+}
+```
+
+---
+
+### DELETE `/delete-student-from-database/`
+
+Delete a student from the students table only (preserves attendance records).
+
+**Query Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| school_name | string | ✅ Yes | School identifier |
+| roll_no | string | ✅ Yes | Student roll number |
+| session | string | ✅ Yes | Academic session |
+
+**Response (200 OK):**
+```json
+{
+  "message": "Student deleted from database successfully",
+  "deleted_student": {
+    "school_name": "JNV_School",
+    "roll_no": "21045001",
+    "session": "2025-26",
+    "name": "aman_meena",
+    "class_name": "10th",
+    "section": "A",
+    "subject": "Mathematics"
+  }
+}
+```
+
+---
+
+### DELETE `/delete-student-from-attendance/`
+
+Delete a student's attendance records only (preserves student database record).
+
+**Query Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| school_name | string | ✅ Yes | School identifier |
+| roll_no | string | ✅ Yes | Student roll number |
+| session | string | ✅ Yes | Academic session |
+
+**Response (200 OK):**
+```json
+{
+  "message": "Student attendance records deleted successfully",
+  "deleted_info": {
+    "roll_no": "21045001",
+    "school_name": "JNV_School",
+    "session": "2025-26",
+    "attendance_records_deleted": 45,
+    "name": "aman_meena",
+    "class_name": "10th",
+    "section": "A"
+  }
+}
+```
+
+---
+
+### DELETE `/delete-student-from-both/`
+
+Delete a student from both students and attendance tables.
+
+**Query Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| school_name | string | ✅ Yes | School identifier |
+| roll_no | string | ✅ Yes | Student roll number |
+| session | string | ✅ Yes | Academic session |
+
+**Response (200 OK):**
+```json
+{
+  "message": "Student deleted from both database and attendance records",
+  "deleted_info": {
+    "roll_no": "21045001",
+    "school_name": "JNV_School",
+    "session": "2025-26",
+    "deleted_from_database": true,
+    "attendance_records_deleted": 45,
+    "name": "aman_meena",
+    "class_name": "10th",
+    "section": "A"
+  }
+}
+```
+
+---
+
+### DELETE `/delete-bulk-from-database/`
+
+Bulk delete students from database only.
+
+**Query Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| school_name | string | ✅ Yes | School identifier |
+| class_name | string | ✅ Yes | Class name |
+| section | string | ✅ Yes | Section |
+| session | string | ✅ Yes | Academic session |
+| subject | string | ❌ No | Filter by subject |
+
+**Response (200 OK):**
+```json
+{
+  "message": "Bulk delete from database successful",
+  "filter": "school=JNV_School, class=10th, section=A, session=2025-26",
+  "students_deleted": 30
+}
+```
+
+---
+
+### DELETE `/delete-bulk-from-attendance/`
+
+Bulk delete attendance records only.
+
+**Query Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| school_name | string | ✅ Yes | School identifier |
+| class_name | string | ✅ Yes | Class name |
+| section | string | ✅ Yes | Section |
+| session | string | ✅ Yes | Academic session |
+| subject | string | ❌ No | Filter by subject |
+
+**Response (200 OK):**
+```json
+{
+  "message": "Bulk delete from attendance successful",
+  "filter": "school=JNV_School, class=10th, section=A, session=2025-26",
+  "attendance_records_deleted": 1350
+}
+```
+
+---
+
+### DELETE `/delete-bulk-from-both/`
+
+Bulk delete from both students and attendance tables.
+
+**Query Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| school_name | string | ✅ Yes | School identifier |
+| class_name | string | ✅ Yes | Class name |
+| section | string | ✅ Yes | Section |
+| session | string | ✅ Yes | Academic session |
+| subject | string | ❌ No | Filter by subject |
+
+**Response (200 OK):**
+```json
+{
+  "message": "Bulk delete from both database and attendance successful",
+  "filter": "school=JNV_School, class=10th, section=A, session=2025-26",
+  "students_deleted": 30,
+  "attendance_records_deleted": 1350
+}
+```
+
+---
+
+## Query Endpoints
+
+### GET `/enrollment-stats/`
+
+Get enrollment statistics grouped by school, class, section, and subject.
+
+**Response (200 OK):**
+```json
+{
+  "total_students": 500,
+  "by_school": [
+    {
+      "school_name": "JNV_School",
+      "total": 300,
+      "by_class": [
+        {
+          "class_name": "10th",
+          "total": 100,
+          "by_section": [
+            {
+              "section": "A",
+              "total": 50,
+              "by_subject": [
+                {"subject": "Mathematics", "count": 50}
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
+```
+
+---
+
+### GET `/view-students/`
+
+Export students as CSV file.
+
+**Query Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| school_name | string | ✅ Yes | School identifier |
+| class_name | string | ❌ No | Filter by class |
+| section | string | ❌ No | Filter by section |
+| subject | string | ❌ No | Filter by subject |
+
+**Response:** CSV file download with columns:
+- school, roll_number, name, class, section, subject
+
+---
+
+## Database Change Log
+
+### GET `/database-change-log/`
+
+View audit log of all database changes.
+
+**Query Parameters:**
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| school_name | string | ⚡ At least one | School identifier |
+| roll_no | string | ⚡ At least one | Roll number |
+| session | string | ⚡ At least one | Academic session |
+| class_name | string | ❌ No | Filter by class |
+| section | string | ❌ No | Filter by section |
+| subject | string | ❌ No | Filter by subject |
+| change_type | string | ❌ No | Filter: insert, update, delete, embedding_update |
+| start_date | string | ❌ No | Start date (YYYY-MM-DD) |
+| end_date | string | ❌ No | End date (YYYY-MM-DD) |
+| format | string | ❌ No | Output: "json" (default) or "csv" |
+
+**Response (200 OK):**
+```json
+{
+  "total_records": 150,
+  "filters": {
+    "school_name": "JNV_School",
+    "session": "2025-26"
+  },
+  "data": [
+    {
+      "school_name": "JNV_School",
+      "class_name": "10th",
+      "section": "A",
+      "subject": "Mathematics",
+      "roll_no": "21045001",
+      "session": "2025-26",
+      "change_type": "insert",
+      "endpoint_name": "/enroll/",
+      "details": "Enrolled student: aman_meena with 3 images",
+      "timestamp": "2026-03-04 10:30:45.123"
+    }
+  ]
+}
+```
+
+---
+
+## Error Handling
+
+### Common Error Responses
+
+**Student Not Found:**
+```json
+{
+  "error": "Student not found",
+  "school_name": "JNV_School",
+  "roll_no": "21045001",
+  "session": "2025-26"
+}
+```
+
+**Invalid Date Format:**
+```json
+{
+  "error": "Invalid date format. Please use DD-MM-YYYY format (e.g., 25-02-2026)"
+}
+```
+
+**No Data Found:**
+```json
+{
+  "error": "No students found matching the criteria"
+}
+```
+
+**Missing Required Parameter:**
+```json
+{
+  "error": "At least one of school_name, roll_no, or session is required"
+}
+```
+
+**Invalid Alpha Value:**
 ```json
 {
   "error": "alpha must be less than 1"
 }
 ```
 
-### Example cURL Request
-```bash
-curl -X POST "http://localhost:8000/update-embedding-via-period/" \
-  -F "school_name=JNV_School" \
-  -F "session=2025-26" \
-  -F "alpha=0.7" \
-  -F "class_name=10th" \
-  -F "section=A" \
-  -F "subject=Mathematics" \
-  -F "faces_zip=@updated_faces.zip"
-```
+---
+
+## Date Formats
+
+| Context | Format | Example |
+|---------|--------|---------|
+| API Input/Output | DD-MM-YYYY | 04-03-2026 |
+| Database Storage | YYYY-MM-DD | 2026-03-04 |
+| Change Log Filter | YYYY-MM-DD | 2026-03-04 |
 
 ---
 
-## Use Cases
+## Status Codes
 
-### Use Case 1: Initial Enrollment
-Use `/enroll/` to register students at the beginning of a session:
-```bash
-# Enroll students for session 2025-26
-POST /enroll/
-  school_name: "JNV_School"
-  session: "2025-26"
-  class_name: "10th"
-  section: "A"
-  faces_zip: initial_photos.zip
-```
-
-### Use Case 2: Mid-Session Update
-Use `/update-embedding-via-period/` to gradually update embeddings as students' appearances change:
-```bash
-# Update embeddings after 3 months (alpha=0.7 means 70% old, 30% new)
-POST /update-embedding-via-period/
-  school_name: "JNV_School"
-  session: "2025-26"
-  alpha: 0.7
-  class_name: "10th"
-  section: "A"
-  faces_zip: updated_photos.zip
-```
-
-### Use Case 3: Re-enrollment for New Session
-Use `/enroll/` with a new session to register the same students for a new academic year:
-```bash
-# Re-enroll same students for new session 2026-27
-POST /enroll/
-  school_name: "JNV_School"
-  session: "2026-27"
-  class_name: "11th"
-  section: "A"
-  faces_zip: new_session_photos.zip
-```
-
-### Use Case 4: Overwrite Incorrect Enrollment
-Use `/enroll/` to completely replace embeddings if initial enrollment was incorrect:
-```bash
-# Overwrite existing embeddings
-POST /enroll/
-  school_name: "JNV_School"
-  session: "2025-26"
-  class_name: "10th"
-  section: "A"
-  faces_zip: corrected_photos.zip
-```
+| Code | Description |
+|------|-------------|
+| 200 | Success |
+| 400 | Bad Request (invalid parameters) |
+| 404 | Not Found |
+| 422 | Validation Error |
+| 500 | Internal Server Error |
 
 ---
 
-## Best Practices
+## Rate Limiting
 
-### 1. Choosing Alpha Values
-- **Start of session**: Use `/enroll/` (no alpha needed)
-- **After 1-2 months**: alpha = 0.8-0.9 (minor adjustments)
-- **After 3-4 months**: alpha = 0.6-0.7 (moderate changes)
-- **After 6+ months**: alpha = 0.4-0.5 (significant changes)
-
-### 2. Image Quality
-- Use clear, well-lit face photos
-- Include 2-5 images per student for better embedding quality
-- Ensure faces are clearly visible and not obscured
-
-### 3. Folder Naming
-- Always use format: `{roll_no}_{student_name}`
-- Roll numbers should be alphanumeric (letters, numbers, hyphens, underscores)
-- Avoid special characters in names
-
-### 4. Session Management
-- Use consistent session format (e.g., "2025-26", "2026-27")
-- Session allows tracking students across academic years
-- Same roll_no can exist in different sessions
-
-### 5. Error Handling
-- Check the `skipped` array in responses for failed enrollments
-- Common reasons: invalid folder names, no faces detected, poor image quality
+No rate limiting is implemented by default. For production deployments, consider adding rate limiting middleware.
 
 ---
 
-## Migration Notes
+## Authentication
 
-### Existing Data
-The database automatically migrates existing data:
-- Old records without `session` field are assigned default session "2025-26"
-- Composite key is updated to include session
-- All existing functionality remains compatible
-
-### Backward Compatibility
-- Existing endpoints continue to work
-- Default session "2025-26" is used for attendance marking
-- No breaking changes to existing API contracts
-
----
-
-## Error Codes
-
-| Error | Description | Solution |
-|-------|-------------|----------|
-| "alpha must be less than 1" | Alpha parameter >= 1 | Use alpha < 1 (e.g., 0.7) |
-| "alpha must be non-negative" | Alpha parameter < 0 | Use alpha >= 0 |
-| "Invalid folder name format" | Folder doesn't match pattern | Use format: `rollno_name` |
-| "No valid face embeddings found" | No faces detected in images | Use clearer face photos |
-| "Duplicate roll number" | Same roll_no appears twice in ZIP | Remove duplicate folders |
-
----
-
-## Testing
-
-### Test Endpoint A (Enroll)
-```python
-import requests
-
-files = {'faces_zip': open('test_faces.zip', 'rb')}
-data = {
-    'school_name': 'Test_School',
-    'session': '2025-26',
-    'class_name': '10th',
-    'section': 'A'
-}
-
-response = requests.post('http://localhost:8000/enroll/', files=files, data=data)
-print(response.json())
-```
-
-### Test Endpoint B (Update Embedding)
-```python
-import requests
-
-files = {'faces_zip': open('updated_faces.zip', 'rb')}
-data = {
-    'school_name': 'Test_School',
-    'session': '2025-26',
-    'alpha': 0.7,
-    'class_name': '10th',
-    'section': 'A'
-}
-
-response = requests.post('http://localhost:8000/update-embedding-via-period/', files=files, data=data)
-print(response.json())
-```
-
----
-
-## Support
-
-For issues or questions:
-1. Check the `skipped` array in API responses for specific error messages
-2. Verify ZIP file structure matches the expected format
-3. Ensure alpha parameter is within valid range (0 <= alpha < 1)
-4. Confirm session format is consistent across requests
+No authentication is implemented by default. For production deployments, consider adding JWT or API key authentication.

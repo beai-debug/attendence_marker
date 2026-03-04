@@ -1,4 +1,9 @@
-from fastapi import FastAPI, UploadFile, Form, File, Query
+"""
+Production-Grade FastAPI Attendance Marker System
+Using PostgreSQL + pgvector for face recognition and attendance management.
+"""
+
+from fastapi import FastAPI, UploadFile, Form, File, Query, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from typing import Optional
@@ -30,7 +35,8 @@ from database import (
     get_students_by_filters,
     log_database_change,
     get_database_change_log,
-    get_change_log_as_csv
+    get_change_log_as_csv,
+    close_pool
 )
 from utils import l2_normalize
 import tempfile
@@ -46,24 +52,33 @@ import csv
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-app = FastAPI()
+app = FastAPI(
+    title="Attendance Marker API",
+    description="Production-grade face recognition attendance system using PostgreSQL + pgvector",
+    version="2.0.0"
+)
 
 # Initialize database on startup
 @app.on_event("startup")
 async def startup_event():
-    logger.info("Initializing database...")
+    logger.info("Initializing PostgreSQL database with pgvector...")
     init_db()
     logger.info("Database initialized successfully")
 
+# Cleanup on shutdown
+@app.on_event("shutdown")
+async def shutdown_event():
+    logger.info("Closing database connection pool...")
+    close_pool()
+    logger.info("Database connection pool closed")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allows all origins
+    allow_origins=["*"],
     allow_credentials=True,
-    allow_methods=["*"],  # Allows all methods
-    allow_headers=["*"],  # Allows all headers
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
-
-
 
 TEMP_DIR = "temp_uploads"
 os.makedirs(TEMP_DIR, exist_ok=True)
@@ -74,21 +89,30 @@ ATTENDANCE_CROPS_DIR = os.path.join(DATA_DIR, "attendance_crops")
 os.makedirs(FACES_DIR, exist_ok=True)
 os.makedirs(ATTENDANCE_CROPS_DIR, exist_ok=True)
 
-# Initialize face analysis app
-face_app = FaceAnalysis(name="buffalo_l", providers=['CPUExecutionProvider'])
+# Initialize face recognition model
+logger.info("Loading InsightFace model...")
+face_app = FaceAnalysis(name='buffalo_l', providers=['CPUExecutionProvider'])
 face_app.prepare(ctx_id=0, det_size=(640, 640))
+logger.info("InsightFace model loaded successfully")
+
 
 def validate_roll_no(roll_no: str) -> bool:
-    """Validate that roll_no contains only alphanumeric characters and is not empty."""
+    """
+    Validate roll number format.
+    Accepts alphanumeric characters, hyphens, and underscores.
+    """
     if not roll_no:
         return False
-    # Allow alphanumeric characters, hyphens, and underscores
-    return bool(re.match(r'^[a-zA-Z0-9_-]+$', roll_no))
+    # Allow alphanumeric, hyphens, and underscores
+    pattern = r'^[a-zA-Z0-9\-_]+$'
+    return bool(re.match(pattern, roll_no))
 
-def parse_student_folder_name(folder_name: str) -> tuple[Optional[str], Optional[str]]:
+
+def parse_student_folder_name(folder_name: str):
     """
-    Parse student folder name to extract roll_no and name.
-    Expected format: rollno_name (e.g., 21045001_aman_meena)
+    Parse student folder name to extract roll number and name.
+    Expected format: {roll_no}_{name}
+    Example: 21045001_aman_meena
     
     Returns:
         tuple: (roll_no, name) or (None, None) if parsing fails
@@ -700,137 +724,265 @@ async def mark_attendance_endpoint(
 
 @app.delete("/delete-student/")
 async def delete_student(
-    school_name: str,
-    roll_no: str
+    school_name: str = Query(..., description="School name (required)"),
+    roll_no: str = Query(..., description="Student roll number (required)"),
+    session: str = Query(..., description="Academic session (required, e.g., 2025-26)")
 ):
-    # Delete student by school_name and roll number (composite key)
-    success = delete_student_by_roll_no(school_name, roll_no)
-    print(f"Delete operation result: {success}")  # Debug print
+    """
+    Delete a student by school_name, roll_no, and session (composite key).
+    
+    **Required Parameters:**
+    - school_name: School identifier
+    - roll_no: Student roll number
+    - session: Academic session (e.g., 2025-26)
+    
+    Deletes from both students and attendance tables.
+    """
+    # Delete student by composite key (school_name, roll_no, session)
+    success = delete_student_by_roll_no(school_name, roll_no, session)
+    logger.info(f"Delete operation result for {school_name}/{roll_no}/{session}: {success}")
     
     if success:
         # Log the delete operation
         log_database_change(
             school_name=school_name,
             roll_no=roll_no,
+            session=session,
             change_type="delete",
             endpoint_name="/delete-student/",
-            details=f"Deleted student with roll_no {roll_no} from both students and attendance tables"
+            details=f"Deleted student with roll_no {roll_no}, session {session} from both students and attendance tables"
         )
-        return {"message": f"Student with roll number {roll_no} from school {school_name} deleted successfully"}
+        return {
+            "message": f"Student with roll number {roll_no} from school {school_name}, session {session} deleted successfully",
+            "school_name": school_name,
+            "roll_no": roll_no,
+            "session": session
+        }
     else:
-        return {"error": "Student not found"}
+        return {"error": "Student not found", "school_name": school_name, "roll_no": roll_no, "session": session}
 
 @app.delete("/delete-class/")
 async def delete_class(
-    school_name: str,
-    class_name: str,
-    section: Optional[str] = None,
-    subject: Optional[str] = None
+    school_name: str = Query(..., description="School name (required)"),
+    class_name: str = Query(..., description="Class name (required)"),
+    session: str = Query(..., description="Academic session (required, e.g., 2025-26)"),
+    section: Optional[str] = Query(None, description="Section (optional filter)"),
+    subject: Optional[str] = Query(None, description="Subject (optional filter)")
 ):
-    # Delete class data with school_name and optional section/subject parameters
-    success = delete_class_data(school_name, class_name, section, subject)
+    """
+    Delete class data by school_name, class_name, and session.
+    
+    **Required Parameters:**
+    - school_name: School identifier
+    - class_name: Class name
+    - session: Academic session (e.g., 2025-26)
+    
+    **Optional Parameters:**
+    - section: Filter by section
+    - subject: Filter by subject
+    
+    Deletes from both students and attendance tables.
+    """
+    # Delete class data with school_name, class_name, session and optional section/subject parameters
+    success = delete_class_data(school_name, class_name, session, section, subject)
     
     if success:
-        message = f"Deleted data for school {school_name}, class {class_name}"
+        # Log the delete operation
+        log_database_change(
+            school_name=school_name,
+            class_name=class_name,
+            section=section,
+            subject=subject,
+            session=session,
+            change_type="delete",
+            endpoint_name="/delete-class/",
+            details=f"Deleted class data for {class_name}, session {session}"
+        )
+        
+        message = f"Deleted data for school {school_name}, class {class_name}, session {session}"
         if section:
-            message += f" section {section}"
+            message += f", section {section}"
         if subject:
-            message += f" subject {subject}"
-        return {"message": message}
+            message += f", subject {subject}"
+        return {
+            "message": message,
+            "school_name": school_name,
+            "class_name": class_name,
+            "session": session,
+            "section": section,
+            "subject": subject
+        }
     else:
         return {"error": "No matching data found to delete"}
 
 
-# ==================== NEW DELETE ENDPOINTS ====================
+# ==================== DELETE ENDPOINTS (ALL REQUIRE SESSION) ====================
 
 # 1. Delete student from database only (not attendance records)
 @app.delete("/delete-student-from-database/")
 async def delete_student_from_database_endpoint(
-    school_name: str = Query(..., description="School name"),
-    roll_no: str = Query(..., description="Student roll number")
+    school_name: str = Query(..., description="School name (required)"),
+    roll_no: str = Query(..., description="Student roll number (required)"),
+    session: str = Query(..., description="Academic session (required, e.g., 2025-26)")
 ):
     """
     Delete a student from the students database only.
     Does NOT delete their attendance records.
     
+    **Required Parameters:**
+    - school_name: School identifier
+    - roll_no: Student roll number
+    - session: Academic session (e.g., 2025-26)
+    
     Returns: Student details (name, class, section, subject) if found and deleted.
     """
-    result = delete_student_from_database_only(school_name, roll_no)
+    result = delete_student_from_database_only(school_name, roll_no, session)
     
     if result:
+        # Log the delete operation
+        log_database_change(
+            school_name=school_name,
+            roll_no=roll_no,
+            session=session,
+            class_name=result.get("class_name"),
+            section=result.get("section"),
+            subject=result.get("subject"),
+            change_type="delete",
+            endpoint_name="/delete-student-from-database/",
+            details=f"Deleted student {result.get('name')} from database only (attendance records preserved)"
+        )
         return {
             "message": "Student deleted from database successfully",
             "deleted_student": result
         }
     else:
-        return {"error": f"Student with roll number {roll_no} not found in school {school_name}"}
+        return {"error": f"Student with roll number {roll_no}, session {session} not found in school {school_name}"}
 
 
 # 2. Delete student from attendance records only (not database)
 @app.delete("/delete-student-from-attendance/")
 async def delete_student_from_attendance_endpoint(
-    school_name: str = Query(..., description="School name"),
-    roll_no: str = Query(..., description="Student roll number")
+    school_name: str = Query(..., description="School name (required)"),
+    roll_no: str = Query(..., description="Student roll number (required)"),
+    session: str = Query(..., description="Academic session (required, e.g., 2025-26)")
 ):
     """
     Delete a student's attendance records only.
     Does NOT delete them from the students database.
     
+    **Required Parameters:**
+    - school_name: School identifier
+    - roll_no: Student roll number
+    - session: Academic session (e.g., 2025-26)
+    
     Returns: Student details and number of attendance records deleted.
     """
-    result = delete_student_from_attendance_only(school_name, roll_no)
+    result = delete_student_from_attendance_only(school_name, roll_no, session)
     
     if result:
+        # Log the delete operation
+        log_database_change(
+            school_name=school_name,
+            roll_no=roll_no,
+            session=session,
+            class_name=result.get("class_name"),
+            section=result.get("section"),
+            subject=result.get("subject"),
+            change_type="delete",
+            endpoint_name="/delete-student-from-attendance/",
+            details=f"Deleted {result.get('attendance_records_deleted', 0)} attendance records (student database record preserved)"
+        )
         return {
             "message": "Student attendance records deleted successfully",
             "deleted_info": result
         }
     else:
-        return {"error": f"No attendance records found for roll number {roll_no} in school {school_name}"}
+        return {"error": f"No attendance records found for roll number {roll_no}, session {session} in school {school_name}"}
 
 
 # 3. Delete student from both database and attendance records
 @app.delete("/delete-student-from-both/")
 async def delete_student_from_both_endpoint(
-    school_name: str = Query(..., description="School name"),
-    roll_no: str = Query(..., description="Student roll number")
+    school_name: str = Query(..., description="School name (required)"),
+    roll_no: str = Query(..., description="Student roll number (required)"),
+    session: str = Query(..., description="Academic session (required, e.g., 2025-26)")
 ):
     """
     Delete a student from both the students database AND attendance records.
     
+    **Required Parameters:**
+    - school_name: School identifier
+    - roll_no: Student roll number
+    - session: Academic session (e.g., 2025-26)
+    
     Returns: Student details and counts from both tables.
     """
-    result = delete_student_from_both(school_name, roll_no)
+    result = delete_student_from_both(school_name, roll_no, session)
     
     if result:
+        # Log the delete operation
+        log_database_change(
+            school_name=school_name,
+            roll_no=roll_no,
+            session=session,
+            class_name=result.get("class_name"),
+            section=result.get("section"),
+            subject=result.get("subject"),
+            change_type="delete",
+            endpoint_name="/delete-student-from-both/",
+            details=f"Deleted student {result.get('name')} from both database and attendance ({result.get('attendance_records_deleted', 0)} records)"
+        )
         return {
             "message": "Student deleted from both database and attendance records",
             "deleted_info": result
         }
     else:
-        return {"error": f"Student with roll number {roll_no} not found in school {school_name}"}
+        return {"error": f"Student with roll number {roll_no}, session {session} not found in school {school_name}"}
 
 
 # 4. Delete bulk students from database only
 @app.delete("/delete-bulk-from-database/")
 async def delete_bulk_from_database_endpoint(
-    school_name: str = Query(..., description="School name"),
-    class_name: str = Query(..., description="Class name"),
-    section: str = Query(..., description="Section"),
-    subject: Optional[str] = Query(None, description="Subject (optional)")
+    school_name: str = Query(..., description="School name (required)"),
+    class_name: str = Query(..., description="Class name (required)"),
+    section: str = Query(..., description="Section (required)"),
+    session: str = Query(..., description="Academic session (required, e.g., 2025-26)"),
+    subject: Optional[str] = Query(None, description="Subject (optional filter)")
 ):
     """
     Delete all students matching the criteria from the students database only.
     Does NOT delete their attendance records.
     
+    **Required Parameters:**
+    - school_name: School identifier
+    - class_name: Class name
+    - section: Section
+    - session: Academic session (e.g., 2025-26)
+    
+    **Optional Parameters:**
+    - subject: Filter by subject
+    
     Returns: Number of students deleted.
     """
-    count = delete_bulk_from_database(school_name, class_name, section, subject)
+    count = delete_bulk_from_database(school_name, class_name, section, session, subject)
     
     if count > 0:
-        filter_info = f"school={school_name}, class={class_name}, section={section}"
+        filter_info = f"school={school_name}, class={class_name}, section={section}, session={session}"
         if subject:
             filter_info += f", subject={subject}"
+        
+        # Log the delete operation
+        log_database_change(
+            school_name=school_name,
+            class_name=class_name,
+            section=section,
+            subject=subject,
+            session=session,
+            change_type="delete",
+            endpoint_name="/delete-bulk-from-database/",
+            details=f"Bulk deleted {count} students from database only (attendance records preserved)"
+        )
+        
         return {
             "message": f"Bulk delete from database successful",
             "filter": filter_info,
@@ -843,23 +995,46 @@ async def delete_bulk_from_database_endpoint(
 # 5. Delete bulk attendance records only
 @app.delete("/delete-bulk-from-attendance/")
 async def delete_bulk_from_attendance_endpoint(
-    school_name: str = Query(..., description="School name"),
-    class_name: str = Query(..., description="Class name"),
-    section: str = Query(..., description="Section"),
-    subject: Optional[str] = Query(None, description="Subject (optional)")
+    school_name: str = Query(..., description="School name (required)"),
+    class_name: str = Query(..., description="Class name (required)"),
+    section: str = Query(..., description="Section (required)"),
+    session: str = Query(..., description="Academic session (required, e.g., 2025-26)"),
+    subject: Optional[str] = Query(None, description="Subject (optional filter)")
 ):
     """
     Delete all attendance records matching the criteria.
     Does NOT delete students from the database.
     
+    **Required Parameters:**
+    - school_name: School identifier
+    - class_name: Class name
+    - section: Section
+    - session: Academic session (e.g., 2025-26)
+    
+    **Optional Parameters:**
+    - subject: Filter by subject
+    
     Returns: Number of attendance records deleted.
     """
-    count = delete_bulk_from_attendance(school_name, class_name, section, subject)
+    count = delete_bulk_from_attendance(school_name, class_name, section, session, subject)
     
     if count > 0:
-        filter_info = f"school={school_name}, class={class_name}, section={section}"
+        filter_info = f"school={school_name}, class={class_name}, section={section}, session={session}"
         if subject:
             filter_info += f", subject={subject}"
+        
+        # Log the delete operation
+        log_database_change(
+            school_name=school_name,
+            class_name=class_name,
+            section=section,
+            subject=subject,
+            session=session,
+            change_type="delete",
+            endpoint_name="/delete-bulk-from-attendance/",
+            details=f"Bulk deleted {count} attendance records (student database records preserved)"
+        )
+        
         return {
             "message": f"Bulk delete from attendance successful",
             "filter": filter_info,
@@ -872,22 +1047,45 @@ async def delete_bulk_from_attendance_endpoint(
 # 6. Delete bulk from both database and attendance
 @app.delete("/delete-bulk-from-both/")
 async def delete_bulk_from_both_endpoint(
-    school_name: str = Query(..., description="School name"),
-    class_name: str = Query(..., description="Class name"),
-    section: str = Query(..., description="Section"),
-    subject: Optional[str] = Query(None, description="Subject (optional)")
+    school_name: str = Query(..., description="School name (required)"),
+    class_name: str = Query(..., description="Class name (required)"),
+    section: str = Query(..., description="Section (required)"),
+    session: str = Query(..., description="Academic session (required, e.g., 2025-26)"),
+    subject: Optional[str] = Query(None, description="Subject (optional filter)")
 ):
     """
     Delete all students AND attendance records matching the criteria.
     
+    **Required Parameters:**
+    - school_name: School identifier
+    - class_name: Class name
+    - section: Section
+    - session: Academic session (e.g., 2025-26)
+    
+    **Optional Parameters:**
+    - subject: Filter by subject
+    
     Returns: Number of students and attendance records deleted.
     """
-    result = delete_bulk_from_both_tables(school_name, class_name, section, subject)
+    result = delete_bulk_from_both_tables(school_name, class_name, section, session, subject)
     
     if result["students_deleted"] > 0 or result["attendance_records_deleted"] > 0:
-        filter_info = f"school={school_name}, class={class_name}, section={section}"
+        filter_info = f"school={school_name}, class={class_name}, section={section}, session={session}"
         if subject:
             filter_info += f", subject={subject}"
+        
+        # Log the delete operation
+        log_database_change(
+            school_name=school_name,
+            class_name=class_name,
+            section=section,
+            subject=subject,
+            session=session,
+            change_type="delete",
+            endpoint_name="/delete-bulk-from-both/",
+            details=f"Bulk deleted {result['students_deleted']} students and {result['attendance_records_deleted']} attendance records"
+        )
+        
         return {
             "message": "Bulk delete from both database and attendance successful",
             "filter": filter_info,
