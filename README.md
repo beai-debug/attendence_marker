@@ -41,9 +41,62 @@ This system provides automated attendance marking using facial recognition techn
 - 4GB+ RAM (for face recognition model)
 - Linux/macOS/Windows
 
-## Quick Start
+---
 
-### 1. Install PostgreSQL with pgvector
+## 🚀 Quick Start Guide
+
+Follow these steps in order to set up and run the application.
+
+---
+
+### Step 1: Clone the Repository and Navigate to Project
+
+```bash
+git clone https://github.com/Deep-Dive-Consulting-Pvt-Ltd/attendence_marker.git
+cd attendence_marker/attendence_marker
+```
+
+---
+
+### Step 2: Create and Activate Python Virtual Environment (.venv)
+
+**This must be done first before installing any dependencies.**
+
+#### Create the virtual environment:
+```bash
+python3 -m venv .venv
+```
+
+#### Activate the virtual environment:
+
+**Linux / macOS:**
+```bash
+source .venv/bin/activate
+```
+
+**Windows (PowerShell):**
+```powershell
+.venv\Scripts\Activate
+```
+
+**Windows (CMD):**
+```cmd
+.venv\Scripts\activate.bat
+```
+
+> ✅ You should see `(.venv)` at the beginning of your terminal prompt when activated.
+
+---
+
+### Step 3: Install Python Dependencies
+
+```bash
+pip install -r requirements.txt
+```
+
+---
+
+### Step 4: Set Up PostgreSQL Database
 
 #### Option A: Ubuntu/Debian (Native Installation)
 
@@ -57,17 +110,11 @@ sudo apt-get install -y postgresql postgresql-contrib
 # Start PostgreSQL service
 sudo service postgresql start
 
-# Install pgvector extension (PostgreSQL 14+)
-sudo apt-get install -y postgresql-14-pgvector
-# OR for PostgreSQL 16:
-# sudo apt-get install -y postgresql-16-pgvector
+# Install pgvector extension for PostgreSQL 16
+sudo apt-get install -y postgresql-16-pgvector
 
-# Configure PostgreSQL user password
-sudo -u postgres psql -c "ALTER USER postgres PASSWORD 'Deepdive';"
-
-# Enable password authentication (if needed)
-# Edit /etc/postgresql/*/main/pg_hba.conf and change 'peer' to 'md5' for local connections
-# Then restart: sudo service postgresql restart
+# OR for PostgreSQL 14:
+# sudo apt-get install -y postgresql-14-pgvector
 ```
 
 #### Option B: macOS with Homebrew
@@ -78,9 +125,6 @@ brew install postgresql pgvector
 
 # Start PostgreSQL service
 brew services start postgresql
-
-# Set password for postgres user
-psql -U postgres -c "ALTER USER postgres PASSWORD 'Deepdive';"
 ```
 
 #### Option C: Docker (Recommended for Development)
@@ -96,73 +140,111 @@ docker run -d --name postgres-pgvector \
 docker ps
 ```
 
-#### Option D: GitHub Codespaces / Dev Containers
+---
+
+### Step 5: Configure PostgreSQL Authentication
+
+This step is **required** to allow the application to connect to PostgreSQL.
+
+#### 5.1 Run the setup script to generate pg_hba.conf:
+```bash
+python setup_postgres.py
+```
+
+#### 5.2 Copy the generated configuration file:
+```bash
+sudo cp /tmp/pg_hba_new.conf /etc/postgresql/16/main/pg_hba.conf
+```
+> Note: Replace `16` with your PostgreSQL version if different (e.g., `14`, `15`).
+
+#### 5.3 Restart PostgreSQL:
+```bash
+sudo service postgresql restart
+```
+
+#### 5.4 Set the postgres user password:
+```bash
+psql -U postgres -c "ALTER USER postgres PASSWORD 'Deepdive';"
+```
+
+#### 5.5 Verify the connection works:
+```bash
+PGPASSWORD=Deepdive psql -h localhost -U postgres -c "SELECT 1 as test;"
+```
+
+You should see:
+```
+ test 
+------
+    1
+(1 row)
+```
+
+---
+
+### Step 6: Start the Application Server
 
 ```bash
-# Install PostgreSQL
+cd /path/to/attendence_marker/attendence_marker
+source .venv/bin/activate  # If not already activated
+uvicorn app:app --host 0.0.0.0 --port 8000 --reload
+```
+
+The server will:
+1. Automatically create the `attendance_db` database if it doesn't exist
+2. Enable pgvector extension
+3. Create all tables with proper indexes
+4. Initialize the face recognition model (InsightFace buffalo_l)
+
+---
+
+### Step 7: Access API Documentation
+
+Open your browser to: **http://localhost:8000/docs**
+
+---
+
+## 📋 Complete Setup Commands (Copy-Paste Ready)
+
+### For GitHub Codespaces / Linux Dev Containers:
+
+```bash
+# Navigate to project directory
+cd attendence_marker/attendence_marker
+
+# Step 1: Create and activate virtual environment
+python3 -m venv .venv
+source .venv/bin/activate
+
+# Step 2: Install Python dependencies
+pip install -r requirements.txt
+
+# Step 3: Install PostgreSQL and pgvector
 sudo apt-get update
 sudo apt-get install -y postgresql postgresql-contrib
-
-# Start PostgreSQL service
 sudo service postgresql start
+sudo apt-get install -y postgresql-16-pgvector
 
-# Set postgres user password
-sudo -u postgres psql -c "ALTER USER postgres PASSWORD 'Deepdive';"
+# Step 4: Configure PostgreSQL authentication
+python setup_postgres.py
+sudo cp /tmp/pg_hba_new.conf /etc/postgresql/16/main/pg_hba.conf
+sudo service postgresql restart
 
-# Install pgvector from source (if not available via apt)
-cd /tmp
-git clone --branch v0.7.0 https://github.com/pgvector/pgvector.git
-cd pgvector
-make
-sudo make install
+# Step 5: Set postgres password
+psql -U postgres -c "ALTER USER postgres PASSWORD 'Deepdive';"
 
-# Enable pgvector extension (done automatically by the app)
-sudo -u postgres psql -d postgres -c "CREATE EXTENSION IF NOT EXISTS vector;"
+# Step 6: Verify connection
+PGPASSWORD=Deepdive psql -h localhost -U postgres -c "SELECT 1;"
+
+# Step 7: Start the application
+uvicorn app:app --host 0.0.0.0 --port 8000 --reload
 ```
 
-#### Verify PostgreSQL Installation
+---
 
-```bash
-# Check PostgreSQL is running
-sudo service postgresql status
-# OR
-pg_isready -h localhost -p 5432
+## ⚙️ Configuration
 
-# Test connection
-psql -U postgres -h localhost -c "SELECT version();"
-```
-
-### 2. Install Python Dependencies
-
-```bash
-cd attendence_marker
-
-```
-#### create  .venv and activate it 
-python3 -m venv .venv
-
-#### Activate .venv
-   Windows (PowerShell)
-
-``` bash
- .venv\Scripts\Activate ```
-
-Windows (CMD)
-
-``` bash
-.venv\Scripts\activate.bat```
-
-
-Linux / Mac
-
-``` bash
-source .venv/bin/activate ```
-
-
-pip install -r requirements.txt
-```
-
-### 3. Configure Database (Optional)
+### Default Database Configuration
 
 The system auto-configures with these defaults:
 - **Host:** localhost
@@ -171,33 +253,33 @@ The system auto-configures with these defaults:
 - **User:** postgres
 - **Password:** Deepdive
 
-To customize, set environment variables:
+### Environment Variables (Optional)
+
+To customize, set environment variables before starting the server:
+
 ```bash
 export POSTGRES_HOST=localhost
 export POSTGRES_PORT=5432
 export POSTGRES_DB=attendance_db
 export POSTGRES_USER=postgres
 export POSTGRES_PASSWORD=Deepdive
+export APP_HOST=0.0.0.0
+export APP_PORT=8000
 ```
 
-### 4. Start the Server
+| Variable | Default | Description |
+|----------|---------|-------------|
+| POSTGRES_HOST | localhost | Database host |
+| POSTGRES_PORT | 5432 | Database port |
+| POSTGRES_DB | attendance_db | Database name |
+| POSTGRES_USER | postgres | Database user |
+| POSTGRES_PASSWORD | Deepdive | Database password |
+| APP_HOST | 0.0.0.0 | API server host |
+| APP_PORT | 8000 | API server port |
 
-```bash
-cd attendence_marker
-uvicorn app:app --host 0.0.0.0 --port 8000 --reload
-```
+---
 
-The server will:
-1. Automatically create the database if it doesn't exist
-2. Enable pgvector extension
-3. Create all tables with proper indexes
-4. Initialize the face recognition model
-
-### 5. Access API Documentation
-
-Open your browser to: `http://localhost:8000/docs`
-
-## API Endpoints Overview
+## 📚 API Endpoints Overview
 
 ### Enrollment Endpoints
 | Endpoint | Method | Description |
@@ -233,7 +315,9 @@ Open your browser to: `http://localhost:8000/docs`
 | `/view-students/` | GET | Export students as CSV |
 | `/database-change-log/` | GET | View audit log |
 
-## Enrollment Process
+---
+
+## 📁 Enrollment Process
 
 ### ZIP File Structure
 ```
@@ -265,7 +349,9 @@ curl -X POST "http://localhost:8000/enroll/" \
   -F "faces_zip=@students.zip"
 ```
 
-## Attendance Marking
+---
+
+## 📸 Attendance Marking
 
 ### Process
 1. Upload classroom photos as ZIP
@@ -283,7 +369,9 @@ curl -X POST "http://localhost:8000/mark-attendance/" \
   -F "threshold=0.3"
 ```
 
-## Delete Operations
+---
+
+## 🗑️ Delete Operations
 
 **Important:** All delete endpoints now require the `session` parameter.
 
@@ -302,33 +390,9 @@ curl -X DELETE "http://localhost:8000/delete-class/?school_name=JNV_School&class
 curl -X DELETE "http://localhost:8000/delete-bulk-from-both/?school_name=JNV_School&class_name=10th&section=A&session=2025-26"
 ```
 
-## Configuration
+---
 
-### Database Configuration (config.py)
-```python
-@dataclass
-class DatabaseConfig:
-    host: str = "localhost"
-    port: int = 5432
-    database: str = "attendance_db"
-    user: str = "postgres"
-    password: str = "Deepdive"
-    pool_size: int = 10
-    vector_dimension: int = 512
-```
-
-### Environment Variables
-| Variable | Default | Description |
-|----------|---------|-------------|
-| POSTGRES_HOST | localhost | Database host |
-| POSTGRES_PORT | 5432 | Database port |
-| POSTGRES_DB | attendance_db | Database name |
-| POSTGRES_USER | postgres | Database user |
-| POSTGRES_PASSWORD | Deepdive | Database password |
-| APP_HOST | 0.0.0.0 | API server host |
-| APP_PORT | 8000 | API server port |
-
-## File Structure
+## 📂 File Structure
 
 ```
 attendence_marker/
@@ -336,17 +400,21 @@ attendence_marker/
 ├── database.py               # PostgreSQL + pgvector operations
 ├── config.py                 # Configuration settings
 ├── utils.py                  # Utility functions
+├── setup_postgres.py         # PostgreSQL setup helper script
 ├── requirements.txt          # Python dependencies
 ├── README.md                 # This file
 ├── API_DOCUMENTATION.md      # Detailed API docs
 ├── DATABASE_STRUCTURE.md     # Database schema docs
+├── .venv/                    # Python virtual environment (created by you)
 ├── data/
 │   ├── faces/               # Enrolled face images
 │   └── attendance_crops/    # Attendance face crops
 └── temp_uploads/            # Temporary file storage
 ```
 
-## Best Practices
+---
+
+## 💡 Best Practices
 
 ### Image Quality
 - Use clear, well-lit face photos
@@ -365,139 +433,100 @@ attendence_marker/
 - Session allows tracking across academic years
 - Same roll_no can exist in different sessions
 
-## Troubleshooting
+---
 
-### Connection Refused Error
+## 🔧 Troubleshooting
 
-If you see this error when starting the application:
+### Error: "Connection refused"
+
 ```
 ERROR:database:Error creating database: connection to server at "localhost" (::1), port 5432 failed: Connection refused
-        Is the server running on that host and accepting TCP/IP connections?
 ```
 
 **Solution:**
-
-1. **Check if PostgreSQL is installed:**
-   ```bash
-   which psql
-   # If not found, install PostgreSQL first (see installation instructions above)
-   ```
-
-2. **Start PostgreSQL service:**
-   ```bash
-   # Linux (systemd)
-   sudo systemctl start postgresql
-   
-   # Linux (service command - for containers)
-   sudo service postgresql start
-   
-   # macOS
-   brew services start postgresql
-   
-   # Docker
-   docker start postgres-pgvector
-   ```
-
-3. **Verify PostgreSQL is running:**
-   ```bash
-   # Check service status
-   sudo service postgresql status
-   
-   # Or test connection
-   pg_isready -h localhost -p 5432
-   
-   # Or try connecting
-   psql -U postgres -h localhost -c "SELECT 1;"
-   ```
-
-4. **Check PostgreSQL is listening on the correct port:**
-   ```bash
-   # Check listening ports
-   sudo netstat -tlnp | grep 5432
-   # OR
-   sudo ss -tlnp | grep 5432
-   ```
-
-5. **If using Docker, ensure the container is running:**
-   ```bash
-   docker ps | grep postgres
-   # If not running:
-   docker start postgres-pgvector
-   ```
-
-### Database Connection Issues
 ```bash
-# Check PostgreSQL is running
-sudo systemctl status postgresql
-# OR for containers:
-sudo service postgresql status
+# Start PostgreSQL service
+sudo service postgresql start
 
-# Check pgvector extension
-psql -U postgres -d attendance_db -c "SELECT * FROM pg_extension WHERE extname = 'vector';"
+# Verify it's running
+pg_isready -h localhost -p 5432
 ```
 
-### Authentication Failed Error
+### Error: "Password authentication failed"
 
-If you see "password authentication failed":
+```
+FATAL: password authentication failed for user "postgres"
+```
 
-1. **Reset postgres password:**
-   ```bash
-   sudo -u postgres psql -c "ALTER USER postgres PASSWORD 'Deepdive';"
-   ```
+**Solution:**
+```bash
+# Run setup script
+python setup_postgres.py
 
-2. **Check pg_hba.conf authentication method:**
-   ```bash
-   # Find pg_hba.conf location
-   sudo -u postgres psql -c "SHOW hba_file;"
-   
-   # Edit the file and ensure local connections use md5 or scram-sha-256
-   # Change 'peer' to 'md5' for local connections if needed
-   sudo nano /etc/postgresql/*/main/pg_hba.conf
-   
-   # Restart PostgreSQL
-   sudo service postgresql restart
-   ```
+# Copy configuration
+sudo cp /tmp/pg_hba_new.conf /etc/postgresql/16/main/pg_hba.conf
 
-3. **Use environment variables to set custom credentials:**
-   ```bash
-   export POSTGRES_USER=your_user
-   export POSTGRES_PASSWORD=your_password
-   ```
+# Restart PostgreSQL
+sudo service postgresql restart
 
-### pgvector Extension Not Found
+# Set password
+psql -U postgres -c "ALTER USER postgres PASSWORD 'Deepdive';"
+```
 
-If you see "extension vector does not exist":
+### Error: "Extension vector does not exist"
 
-1. **Install pgvector from source:**
-   ```bash
-   cd /tmp
-   git clone --branch v0.7.0 https://github.com/pgvector/pgvector.git
-   cd pgvector
-   make
-   sudo make install
-   ```
+```
+ERROR: extension "vector" must be installed in the system
+```
 
-2. **Enable the extension:**
-   ```bash
-   sudo -u postgres psql -d attendance_db -c "CREATE EXTENSION IF NOT EXISTS vector;"
-   ```
+**Solution:**
+```bash
+# Install pgvector for PostgreSQL 16
+sudo apt-get install -y postgresql-16-pgvector
 
-### Face Recognition Issues
-- Ensure images are clear and well-lit
-- Check that faces are not obscured
-- Try lowering the threshold value
+# Restart PostgreSQL
+sudo service postgresql restart
+```
 
-### Memory Issues
-- InsightFace model requires ~2GB RAM
-- Consider using GPU for better performance
+### Error: "InsightFace model loading issues"
 
-## License
+**Solution:**
+- Ensure you have at least 4GB RAM available
+- The model downloads automatically on first run (~500MB)
+- Check internet connectivity for model download
+
+### Virtual Environment Not Activated
+
+If you see errors about missing packages:
+```bash
+# Make sure you're in the correct directory
+cd attendence_marker/attendence_marker
+
+# Activate the virtual environment
+source .venv/bin/activate  # Linux/macOS
+# OR
+.venv\Scripts\Activate     # Windows PowerShell
+```
+
+---
+
+## 📖 Additional Documentation
+
+- **API Documentation:** See `API_DOCUMENTATION.md` for detailed endpoint specifications
+- **Database Schema:** See `DATABASE_STRUCTURE.md` for table structures
+- **Interactive API Docs:** Visit `http://localhost:8000/docs` when server is running
+
+---
+
+## 📄 License
 
 [Add your license information here]
 
-## Support
+---
+
+## 🆘 Support
 
 For issues and questions:
 1. Check the API documentation at `/docs`
-2. Review the database change log
+2. Review the database change log endpoint
 3. Use the GitHub issue tracker
